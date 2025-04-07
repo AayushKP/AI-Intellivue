@@ -23,6 +23,7 @@ import { X, UploadCloud, Loader2 } from "lucide-react";
 import { useState, useRef, ChangeEvent } from "react";
 import { toast } from "sonner";
 import pdfToText from "react-pdftotext";
+import { useRouter } from "next/navigation";
 
 export default function Interview() {
   const [role, setRole] = useState<string>("");
@@ -36,7 +37,7 @@ export default function Interview() {
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+  const router = useRouter();
   const handleTechSelect = () => {
     if (techInput.trim() && !selectedTech.includes(techInput.trim())) {
       setSelectedTech([...selectedTech, techInput.trim()]);
@@ -163,6 +164,18 @@ export default function Interview() {
       }
 
       const result = await response.json();
+      const roomId = Math.random().toString(36).substring(2, 10);
+
+      //Clear previous data
+      localStorage.removeItem("questions");
+      localStorage.removeItem("roomId");
+
+      // Setting the new data
+      localStorage.setItem("questions", JSON.stringify(result));
+      localStorage.setItem("roomId", roomId);
+
+      // Navigate to the interview page
+      router.push(`/interview/${roomId}`);
       console.log("Backend Response:", result);
       toast.success("Interview questions generated successfully!");
     } catch (error: any) {
@@ -178,9 +191,7 @@ export default function Interview() {
   return (
     <div className="h-[100dvh] p-10 w-full bg-gray-900 text-black flex justify-center items-center">
       <div className="bg-black rounded-md h-full w-full grid grid-cols-3 overflow-hidden border border-gray-700">
-        {/* Left Panel */}
         <div className="bg-black h-full col-span-2 p-8 flex flex-col justify-center items-center">
-          {/* ... Title and Description ... */}
           <div className="text-white font-sans text-4xl text-center">
             Create Customisable Interview Sessions
           </div>
@@ -323,7 +334,6 @@ export default function Interview() {
                     </div>
                   </div>
 
-                  {/* Resume Upload */}
                   <div className="space-y-2">
                     <Label htmlFor="resume-upload" className="text-white">
                       Upload Resume

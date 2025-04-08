@@ -1,19 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import NextButton from "@/components/Next-Btn";
 
 export default function Page({ params }: { params: { slug?: string } }) {
   const [roomId, setRoomId] = useState<string | null>(null);
-  const questions: string | null = localStorage.getItem("questions");
+  const [questionsArr, setQuestionsArr] = useState<string[]>([]);
+  const [currentIndex, setCurrentIndex] = useState<number>(0);
 
-  if (questions) {
-    //questions array
-    const parsed = JSON.parse(questions);
-    const questionsArr = parsed.questions
-      .split("|")
-      .map((q: string) => q.trim());
-    console.log(questionsArr);
-  }
+  const router = useRouter();
+
   useEffect(() => {
     const fromParams = params?.slug;
     if (fromParams) {
@@ -22,14 +19,40 @@ export default function Page({ params }: { params: { slug?: string } }) {
       const fromStorage = localStorage.getItem("roomId");
       setRoomId(fromStorage);
     }
+
+    const raw = localStorage.getItem("questions");
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const cleaned = parsed.questions.replace(/\\n|\\\"}/g, "").trim();
+        const arr = cleaned.split("|").map((q: string) => q.trim());
+        setQuestionsArr(arr);
+      } catch (error) {
+        console.error("Error parsing questions:", error);
+      }
+    }
   }, [params]);
+
+  const handleNext = () => {
+    if (currentIndex < questionsArr.length - 1) {
+      setCurrentIndex((prev) => prev + 1);
+    } else {
+      router.push("/result");
+    }
+  };
 
   return (
     <div className="bg-black text-white h-[100dvh] flex flex-row items-center justify-center text-xl">
-      <div className="w-1/2 h-full bg-yellow-400">
-        Room ID: {roomId || "Not found"}
+      <div className="w-1/2 h-full bg-yellow-400 flex justify-center items-center">
+        <div className="bg-white w-5/6 p-4 text-black rounded-xl shadow-xl">
+          <p className="mb-6">{questionsArr[currentIndex] || "Loading..."}</p>
+          <NextButton
+            onClick={handleNext}
+            isLast={currentIndex === questionsArr.length - 1}
+          />
+        </div>
       </div>
-      <div className="w-1/2 h-full bg-red-400">
+      <div className="w-1/2 h-full bg-red-400 flex items-center justify-center">
         Room ID: {roomId || "Not found"}
       </div>
     </div>

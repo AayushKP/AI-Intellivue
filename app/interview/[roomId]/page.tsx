@@ -33,6 +33,15 @@ export default function Page({ params }: { params: { slug?: string } }) {
     }
   }, [params]);
 
+  useEffect(() => {
+    if (questionsArr.length === 0) return;
+
+    const utterance = new SpeechSynthesisUtterance(questionsArr[currentIndex]);
+    utterance.lang = "en-US"; // or your desired language
+    window.speechSynthesis.cancel(); // Stop previous speech
+    window.speechSynthesis.speak(utterance);
+  }, [currentIndex, questionsArr]);
+
   const handleNext = () => {
     if (currentIndex < questionsArr.length - 1) {
       setCurrentIndex((prev) => prev + 1);
@@ -42,18 +51,20 @@ export default function Page({ params }: { params: { slug?: string } }) {
   };
 
   return (
-    <div className="bg-black text-white h-[100dvh] flex flex-row items-center justify-center text-xl">
+    <div className="bg-black text-white h-[100dvh] flex flex-row items-center justify-center text-xl relative">
       <div className="w-1/2 h-full bg-yellow-400 flex justify-center items-center">
         <div className="bg-white w-5/6 p-4 text-black rounded-xl shadow-xl">
           <p className="mb-6">{questionsArr[currentIndex] || "Loading..."}</p>
-          <NextButton
-            onClick={handleNext}
-            isLast={currentIndex === questionsArr.length - 1}
-          />
         </div>
       </div>
       <div className="w-1/2 h-full bg-red-400 flex items-center justify-center">
         Room ID: {roomId || "Not found"}
+      </div>
+      <div className="absolute bottom-20">
+        <NextButton
+          onClick={handleNext}
+          isLast={currentIndex === questionsArr.length - 1}
+        />
       </div>
     </div>
   );

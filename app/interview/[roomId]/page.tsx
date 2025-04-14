@@ -1,9 +1,13 @@
 "use client";
 
-import { use, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import NextButton from "@/components/Next-Btn";
 import { Button } from "@/components/ui/button";
+import { EditorView } from "@codemirror/view";
+import { basicSetup } from "codemirror";
+import { javascript } from "@codemirror/lang-javascript";
+import { EditorState } from "@codemirror/state";
 
 declare global {
   interface Window {
@@ -42,17 +46,16 @@ interface Response {
 const LANGUAGE_CODE = "en-US";
 const DEFAULT_QUESTION_TIME = 120;
 
-export default function Page(promiseParams: {
-  params: Promise<{ roomId: string }>;
-}) {
-  const { roomId } = use(promiseParams.params);
+export default function Page({ params }: { params: { roomId: string } }) {
   const router = useRouter();
 
+  const [roomId, setRoomId] = useState<string | null>(null);
   const [isClient, setIsClient] = useState(false);
   const [questionsArr, setQuestionsArr] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [responses, setResponses] = useState<Response[]>([]);
   const [editableTranscript, setEditableTranscript] = useState("");
+  const [codeMirrorContent, setCodeMirrorContent] = useState("");
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -60,15 +63,35 @@ export default function Page(promiseParams: {
   const [timeLeft, setTimeLeft] = useState(DEFAULT_QUESTION_TIME);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isVoiceReady, setIsVoiceReady] = useState(false);
+  const [needsPermission, setNeedsPermission] = useState(true);
+  const [fullscreenError, setFullscreenError] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const finalTranscriptRef = useRef("");
-  const recognitionTimerRef = useRef<NodeJS.Timeout | null>(null);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const initializedRef = useRef(false);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
   const isMountedRef = useRef(true);
   const isHandlingNext = useRef(false);
+
+  // Set Room ID on mount
+  useEffect(() => {
+    setRoomId(params.roomId);
+  }, [params]);
+
+  const setupEditorExtensions = useCallback(() => {
+    return [
+      basicSetup,
+      javascript(),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          setCodeMirrorContent(update.state.doc.toString());
+        }
+      }),
+    ];
+  }, []);
 
   const formatTime = (seconds: number) => {
     const minutes = Math.floor(seconds / 60);
@@ -78,31 +101,40 @@ export default function Page(promiseParams: {
       .padStart(2, "0")}`;
   };
 
+  const resetTimer = () => {
+    const isLastTwo = currentIndex >= questionsArr.length - 2;
+    setTimeLeft(isLastTwo ? 600 : DEFAULT_QUESTION_TIME);
+    setIsTimerRunning(true);
+  };
+
   const enterFullScreen = async () => {
-    const el = document.documentElement;
-    if (document.fullscreenElement || !isMountedRef.current) return;
-    const req = el.requestFullscreen || (el as any).webkitRequestFullscreen;
-    if (req) {
-      await req.call(el);
+    try {
+      const el = document.documentElement;
+      if (!document.fullscreenElement) {
+        const req = el.requestFullscreen || (el as any).webkitRequestFullscreen;
+        if (req) {
+          await req.call(el);
+        }
+      }
       setIsFullscreen(true);
+    } catch (err) {
+      setFullscreenError(true);
     }
   };
 
   const exitFullScreen = async () => {
-    if (!document.fullscreenElement || !isMountedRef.current) return;
-    const exit =
-      document.exitFullscreen || (document as any).webkitExitFullscreen;
-    if (exit) {
-      await exit.call(document);
+    try {
+      if (document.fullscreenElement) {
+        const exit =
+          document.exitFullscreen || (document as any).webkitExitFullscreen;
+        if (exit) {
+          await exit.call(document);
+        }
+      }
       setIsFullscreen(false);
+    } catch (err) {
+      console.error("Exit fullscreen error:", err);
     }
-  };
-
-  const stopMediaStream = () => {
-    if (!mediaStream || !isMountedRef.current) return;
-    mediaStream.getTracks().forEach((track) => track.stop());
-    if (videoRef.current) videoRef.current.srcObject = null;
-    setMediaStream(null);
   };
 
   const startMediaStream = async () => {
@@ -117,25 +149,35 @@ export default function Page(promiseParams: {
       }
       setMediaStream(stream);
       if (videoRef.current) videoRef.current.srcObject = stream;
+      setNeedsPermission(false);
     } catch (err) {
-      console.error("Media error:", err);
+      setNeedsPermission(true);
     }
+  };
+
+  const stopMediaStream = () => {
+    if (!mediaStream) return;
+    mediaStream.getTracks().forEach((track) => track.stop());
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setMediaStream(null);
+  };
+
+  const handleStartInterview = async () => {
+    setIsLoading(true);
+    await Promise.all([enterFullScreen(), startMediaStream()]);
+    setIsLoading(false);
   };
 
   const stopRecognition = () => {
     recognitionRef.current?.stop();
     setIsRecognizing(false);
-    if (recognitionTimerRef.current) {
-      clearTimeout(recognitionTimerRef.current);
-      recognitionTimerRef.current = null;
-    }
   };
 
   const startRecognition = () => {
     const SpeechRecognitionAPI =
       window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) {
-      alert("Speech recognition not supported in this browser");
+      alert("Speech recognition not supported");
       return;
     }
 
@@ -147,7 +189,6 @@ export default function Page(promiseParams: {
     recognition.interimResults = true;
 
     recognition.onstart = () => setIsRecognizing(true);
-
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = "";
       let final = finalTranscriptRef.current;
@@ -166,16 +207,7 @@ export default function Page(promiseParams: {
     recognition.onend = () => setIsRecognizing(false);
 
     recognitionRef.current = recognition;
-    try {
-      recognition.start();
-    } catch (err) {
-      console.error("Recognition start error:", err);
-    }
-  };
-
-  const resetTimer = () => {
-    setTimeLeft(DEFAULT_QUESTION_TIME);
-    setIsTimerRunning(true);
+    recognition.start();
   };
 
   const handleNext = async () => {
@@ -187,7 +219,10 @@ export default function Page(promiseParams: {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
 
     const currentQuestion = questionsArr[currentIndex];
-    const finalAnswer = editableTranscript.trim();
+    const isLastTwo = currentIndex >= questionsArr.length - 2;
+    const finalAnswer = isLastTwo
+      ? codeMirrorContent.trim()
+      : editableTranscript.trim();
 
     const updatedResponses = [
       ...responses,
@@ -203,6 +238,7 @@ export default function Page(promiseParams: {
       setCurrentIndex((i) => i + 1);
       finalTranscriptRef.current = "";
       setEditableTranscript("");
+      setCodeMirrorContent("");
     } else {
       localStorage.setItem("responses", JSON.stringify(updatedResponses));
       await stopMediaStream();
@@ -224,9 +260,54 @@ export default function Page(promiseParams: {
     isHandlingNext.current = false;
   };
 
+  // Setup interview logic
+  useEffect(() => {
+    setIsClient(true);
+
+    const rawQuestions = localStorage.getItem("questions");
+    if (rawQuestions) {
+      try {
+        const parsed = JSON.parse(rawQuestions);
+        const cleaned = parsed.questions
+          .replace(/\\n/g, " ")
+          .replace(/\\"/g, '"')
+          .replace(/^"|"$/g, "")
+          .trim();
+
+        const list = cleaned
+          .split("|")
+          .map((q: string) => q.trim())
+          .filter(Boolean);
+        setQuestionsArr(list);
+      } catch (e) {
+        console.error("Failed parsing questions", e);
+      }
+    }
+
+    const loadVoices = () => {
+      let voices = speechSynthesis.getVoices();
+      if (voices.length) {
+        const match = voices.find((v) => v.lang === LANGUAGE_CODE);
+        setVoice(match ?? voices[0] ?? null);
+        setIsVoiceReady(true);
+      } else {
+        setTimeout(loadVoices, 100);
+      }
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+
+    return () => {
+      stopMediaStream();
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.onvoiceschanged = null;
+      isMountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (!isTimerRunning) return;
-
     timerIntervalRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
@@ -238,100 +319,87 @@ export default function Page(promiseParams: {
         return prev - 1;
       });
     }, 1000);
-
     return () => clearInterval(timerIntervalRef.current!);
   }, [isTimerRunning]);
 
   useEffect(() => {
-    isMountedRef.current = true;
-    if (initializedRef.current) return;
-    initializedRef.current = true;
-
-    setIsClient(true);
-    enterFullScreen();
-
-    try {
-      const rawQuestions = localStorage.getItem("questions");
-      const parsed = JSON.parse(rawQuestions || "{}");
-
-      if (parsed?.questions) {
-        const cleaned = parsed.questions
-          .replace(/\\n/g, " ")
-          .replace(/\\"/g, '"')
-          .replace(/^"|"$/g, "")
-          .trim();
-
-        const questions = cleaned
-          .split("|")
-          .map((q: string) => q.trim())
-          .filter(Boolean);
-
-        setQuestionsArr(questions);
-      }
-    } catch (e) {
-      console.error("Error parsing questions", e);
-    }
-
-    const initializeVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find((v) => v.lang === LANGUAGE_CODE);
-      setVoice(preferred ?? voices[0] ?? null);
-    };
-
-    window.speechSynthesis.onvoiceschanged = initializeVoices;
-    initializeVoices();
-    startMediaStream().finally(() => setIsLoading(false));
-
-    return () => {
-      isMountedRef.current = false;
-      stopMediaStream();
-      exitFullScreen().catch(() => {});
-      window.speechSynthesis.onvoiceschanged = null;
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!questionsArr.length || !voice || !isClient) return;
-
-    finalTranscriptRef.current = "";
-    setEditableTranscript("");
-    setIsLoading(false);
-    stopRecognition();
-    window.speechSynthesis.cancel();
+    if (
+      questionsArr.length === 0 ||
+      !isClient ||
+      needsPermission ||
+      !isVoiceReady
+    )
+      return;
 
     const question = questionsArr[currentIndex];
-    const utterance = new SpeechSynthesisUtterance(question);
-    utterance.voice = voice;
-    utterance.lang = LANGUAGE_CODE;
-    utterance.rate = 0.9;
+    const speak = new SpeechSynthesisUtterance(question);
+    speak.voice = voice;
+    speak.lang = LANGUAGE_CODE;
+    speak.rate = 0.9;
 
-    const startAfterUtterance = () => {
-      recognitionTimerRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
-          startRecognition();
-          resetTimer(); // 👈 Start timer AFTER question is spoken
-        }
-      }, 300);
+    speak.onend = () => {
+      if (currentIndex < questionsArr.length - 2) startRecognition();
+      resetTimer();
     };
 
-    utterance.onend = startAfterUtterance;
-    utterance.onerror = startAfterUtterance;
-
-    window.speechSynthesis.speak(utterance);
+    window.speechSynthesis.speak(speak);
 
     return () => {
       window.speechSynthesis.cancel();
       stopRecognition();
-      if (recognitionTimerRef.current)
-        clearTimeout(recognitionTimerRef.current);
     };
-  }, [currentIndex, questionsArr, voice, isClient]);
+  }, [currentIndex, questionsArr, isClient, needsPermission, isVoiceReady]);
 
-  if (!isClient || isLoading) {
+  useEffect(() => {
+    if (
+      currentIndex >= questionsArr.length - 2 &&
+      editorRef.current &&
+      !viewRef.current
+    ) {
+      const state = EditorState.create({
+        doc: codeMirrorContent,
+        extensions: setupEditorExtensions(),
+      });
+      viewRef.current = new EditorView({
+        state,
+        parent: editorRef.current,
+      });
+    }
+
+    return () => {
+      viewRef.current?.destroy();
+      viewRef.current = null;
+    };
+  }, [currentIndex, questionsArr.length, setupEditorExtensions]);
+
+  // === RENDER ===
+
+  if (!roomId || isLoading || !isClient || !isVoiceReady) {
     return (
       <div className="bg-gray-900 text-white h-screen flex items-center justify-center text-lg font-semibold">
         Loading Interview Environment...
+      </div>
+    );
+  }
+
+  if (needsPermission) {
+    return (
+      <div className="bg-gray-900 text-white h-screen flex flex-col items-center justify-center p-8 text-center">
+        <h1 className="text-2xl font-bold mb-6">Interview Setup</h1>
+        <p className="mb-8">
+          Please allow camera and microphone access to begin your interview.
+        </p>
+        <Button
+          onClick={handleStartInterview}
+          className="px-8 py-4 text-lg bg-blue-600 hover:bg-blue-700"
+        >
+          Start Interview
+        </Button>
+        {fullscreenError && (
+          <p className="mt-4 text-yellow-500">
+            Fullscreen couldn't be activated automatically. Enable it manually.
+          </p>
+        )}
       </div>
     );
   }
@@ -355,22 +423,35 @@ export default function Page(promiseParams: {
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-gray-200">
+      {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 bg-gray-800 border-b border-gray-700">
         <div className="w-32 h-24 rounded-md overflow-hidden border-2 border-gray-600 bg-black">
-          <video
-            ref={videoRef}
-            autoPlay
-            muted
-            className="w-full h-full object-cover"
-          />
+          {mediaStream ? (
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gray-800">
+              <span className="text-sm">Camera Off</span>
+            </div>
+          )}
         </div>
-
         <div className="text-center">
           <h2 className="text-xl font-semibold text-white">
             Interview Session
           </h2>
+          {!isFullscreen && (
+            <button
+              onClick={enterFullScreen}
+              className="text-sm text-blue-400 hover:text-blue-300 mt-1"
+            >
+              Enter Fullscreen
+            </button>
+          )}
         </div>
-
         <div className="text-right">
           <div className="text-sm text-gray-400">Time Left:</div>
           <div className="text-2xl font-bold text-cyan-400">
@@ -379,7 +460,9 @@ export default function Page(promiseParams: {
         </div>
       </div>
 
+      {/* Body */}
       <div className="flex flex-1 overflow-hidden">
+        {/* Question Area */}
         <div className="w-1/2 flex flex-col p-6 border-r border-gray-700 overflow-y-auto">
           <p className="font-semibold text-lg mb-3 text-cyan-400">
             Question {currentIndex + 1} of {questionsArr.length}
@@ -399,21 +482,25 @@ export default function Page(promiseParams: {
           </div>
         </div>
 
+        {/* Answer Area */}
         <div className="w-1/2 flex flex-col p-6 overflow-y-auto">
-          <label
-            htmlFor="transcriptArea"
-            className="font-semibold text-lg mb-3 text-green-400"
-          >
+          <label className="font-semibold text-lg mb-3 text-green-400">
             Your Answer:
           </label>
-          <textarea
-            id="transcriptArea"
-            value={editableTranscript}
-            onChange={(e) => setEditableTranscript(e.target.value)}
-            placeholder={isRecognizing ? "Listening..." : "Start speaking..."}
-            className="flex-1 w-full bg-gray-800 text-gray-200 p-4 rounded-lg shadow-md resize-none text-base focus:outline-none focus:ring-2 focus:ring-green-500 border border-gray-700"
-            aria-label="Your answer transcript"
-          />
+          {currentIndex >= questionsArr.length - 2 ? (
+            <div
+              ref={editorRef}
+              className="flex-1 w-full bg-gray-800 text-gray-200 rounded-lg shadow-md text-base border border-gray-700 overflow-hidden"
+            />
+          ) : (
+            <textarea
+              value={editableTranscript}
+              onChange={(e) => setEditableTranscript(e.target.value)}
+              placeholder={isRecognizing ? "Listening..." : "Start speaking..."}
+              className="flex-1 w-full bg-gray-800 text-gray-200 p-4 rounded-lg shadow-md resize-none text-base focus:outline-none focus:ring-2 focus:ring-green-500 border border-gray-700"
+              aria-label="Your answer transcript"
+            />
+          )}
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import NextButton from "@/components/Next-Btn";
 import { Button } from "@/components/ui/button";
@@ -46,7 +46,9 @@ interface Response {
 const LANGUAGE_CODE = "en-US";
 const DEFAULT_QUESTION_TIME = 120;
 
-export default function Page({ params }: { params: { roomId: string } }) {
+export default function Page({ params }: any) {
+  const resolvedParams: any = React.use(params);
+  const initialRoomId = resolvedParams.roomId;
   const router = useRouter();
 
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -371,16 +373,6 @@ export default function Page({ params }: { params: { roomId: string } }) {
       viewRef.current = null;
     };
   }, [currentIndex, questionsArr.length, setupEditorExtensions]);
-
-  // === RENDER ===
-
-  if (!roomId || isLoading || !isClient || !isVoiceReady) {
-    return (
-      <div className="bg-gray-900 text-white h-screen flex items-center justify-center text-lg font-semibold">
-        Loading Interview Environment...
-      </div>
-    );
-  }
 
   if (needsPermission) {
     return (
